@@ -69,7 +69,7 @@
     position:relative;
     font-family:'Orbitron', sans-serif;
     font-weight:700;
-    letter-spacing:0.05em;
+    letter-spacing:0.03em;
     text-transform:uppercase;
     font-size:0.66rem;
     padding:0.65rem 0.8rem;
@@ -80,7 +80,11 @@
     cursor:pointer;
     transition:all .15s ease;
     min-height:44px;
-    white-space:nowrap;
+    white-space:normal;
+    overflow-wrap:break-word;
+    word-break:break-word;
+    line-height:1.3;
+    text-align:center;
   }
   .neon-btn:active:not(:disabled){ transform:scale(0.96); }
   .neon-btn:hover:not(:disabled){ transform:translateY(-1px); }
@@ -183,7 +187,11 @@
   /* ---------- misc ---------- */
   .chip{ border-radius:10px; padding:0.35rem 0.55rem; background:rgba(255,255,255,0.04); border:1px solid var(--panel-line); }
   .chip.active{ border-color:var(--cyan); box-shadow:0 0 12px rgba(32,236,255,0.3); }
-  .log-line{ border-bottom:1px solid rgba(255,255,255,0.05); padding:3px 0; }
+  .log-line{ border-bottom:1px solid rgba(255,255,255,0.05); padding:3px 0 3px 8px; opacity:0.85; }
+  .log-round-header{
+    font-family:'Orbitron', sans-serif; font-weight:800; letter-spacing:0.08em; font-size:0.68rem;
+    padding:6px 8px; margin-top:6px; border-radius:6px; border:1px solid; background:rgba(255,255,255,0.04);
+  }
 
   ::-webkit-scrollbar{ width:6px; height:6px; }
   ::-webkit-scrollbar-thumb{ background:rgba(139,92,246,0.4); border-radius:4px; }
@@ -270,7 +278,7 @@
           <li>Si ya se completó la primera vuelta de la ronda y tu mano suma 9 o menos, puedes <b>cantar ¡9!</b> (Stop) aquí mismo y terminar la ronda.</li>
           <li>Si no cantas, elige de tu mano las cartas de las que te quieres deshacer: una carta suelta, de 2 a 4 cartas del mismo número, o una escalera de <b>exactamente 5</b> números consecutivos (el 0 no cuenta para escaleras). Confirma para mandarlas a la pila de descarte.</li>
           <li>Después, <b>roba una carta</b>: del mazo boca abajo o de la pila de descarte. Ojo: si acabas de descartar, no puedes tomar justo esa misma carta de vuelta — solo la que estaba en la pila antes de tu jugada.</li>
-          <li>Si la carta robada tiene el <b>mismo número</b> que la(s) que acabas de descartar, tienes derecho a descartarla también de inmediato. Si no coincide, se queda en tu mano y termina tu turno.</li>
+          <li>Si la carta robada tiene el <b>mismo número</b> que la carta suelta o el grupo que acabas de descartar, tienes derecho a descartarla también de inmediato. Esto <b>no aplica a escaleras</b> (cada carta tiene un número distinto). Si no coincide, se queda en tu mano y termina tu turno.</li>
         </ol>
       </div>
       <div>
@@ -491,7 +499,10 @@
     <div class="font-display text-2xl sm:text-3xl mb-1 glow-text" style="color:var(--cyan);">FIN DE LA PARTIDA</div>
     <div id="gameover-winner" class="font-display text-base sm:text-lg mt-3 mb-5" style="color:var(--amber);"></div>
     <div id="gameover-table" class="space-y-2 mb-6 font-mono text-xs sm:text-sm text-left"></div>
-    <button id="restart-btn" class="neon-btn magenta w-full py-3">Nueva Partida</button>
+    <div class="flex flex-col gap-2">
+      <button id="rematch-btn" class="neon-btn cyan w-full py-3">Jugar de nuevo (mismos jugadores)</button>
+      <button id="restart-btn" class="neon-btn magenta w-full py-3">Volver al inicio</button>
+    </div>
   </div>
 </div>
 
@@ -613,6 +624,7 @@ function freshState(mode, opts){
     startingPlayerIndex: 0,
     turnPhase: 'select', // 'select' (elegir descarte / cantar nine) -> 'draw' (robar) -> 'resolve' (decidir si descartar la robada)
     lastDiscardValues: [],
+    lastDiscardType: null,
     lastDiscardedIds: [],
     drawnCard: null,
     selectedIds: [],
@@ -620,6 +632,7 @@ function freshState(mode, opts){
     revealed: false,
     roundOver: false,
     gameOver: false,
+    currentRoundNumber: 0,
     logs: []
   };
 }
@@ -639,12 +652,52 @@ function buildDeck(){
   }
   return shuffle(cards);
 }
-function shuffle(arr){
+// Generador con mejor entropía que Math.random() cuando está disponible.
+function secureRandom(){
+  if(window.crypto && window.crypto.getRandomValues){
+    const buf = new Uint32Array(1);
+    window.crypto.getRandomValues(buf);
+    return buf[0] / 4294967296; // 2^32
+  }
+  return Math.random();
+}
+
+// Simula un "riffle shuffle" físico: parte el mazo en dos mitades
+// (con un corte ligeramente aleatorio) y las intercala.
+function riffleOnce(arr){
+  const cut = Math.floor(arr.length/2) + Math.floor((secureRandom()-0.5) * arr.length * 0.12);
+  const left = arr.slice(0, cut);
+  const right = arr.slice(cut);
+  const out = [];
+  let li = 0, ri = 0;
+  while(li < left.length || ri < right.length){
+    // intercalado con algo de irregularidad, como una baraja real
+    const takeFromLeft = secureRandom() < 0.5;
+    if(takeFromLeft && li < left.length) out.push(left[li++]);
+    else if(ri < right.length) out.push(right[ri++]);
+    else out.push(left[li++]);
+  }
+  return out;
+}
+
+function fisherYates(arr){
   const a = arr.slice();
   for(let i=a.length-1;i>0;i--){
-    const j = Math.floor(Math.random()*(i+1));
+    const j = Math.floor(secureRandom()*(i+1));
     [a[i],a[j]] = [a[j],a[i]];
   }
+  return a;
+}
+
+// Combina varios "riffles" con Fisher-Yates para una mezcla más pareja
+// y con mejor sensación de aleatoriedad que un único paso.
+function shuffle(arr){
+  let a = arr.slice();
+  for(let pass=0; pass<3; pass++){
+    a = riffleOnce(a);
+  }
+  a = fisherYates(a);
+  a = fisherYates(a);
   return a;
 }
 function handSum(hand){ return hand.reduce((s,c)=>s+c.value,0); }
@@ -663,9 +716,21 @@ function unitSum(playerIdx){
 }
 
 /* ======================= LOGGING ======================= */
+const ROUND_COLORS = ['#20ecff','#ff2e9a','#ffd23d','#3dffa0','#a78bfa','#ff6b4d'];
+
+function roundColorFor(n){
+  return ROUND_COLORS[(Math.max(n,1) - 1) % ROUND_COLORS.length];
+}
+
 function log(msg){
-  state.logs.push(msg);
-  if(state.logs.length > 250) state.logs.shift();
+  state.logs.push({ text: msg, round: state.currentRoundNumber || 1, color: roundColorFor(state.currentRoundNumber || 1), header:false });
+  if(state.logs.length > 300) state.logs.shift();
+  renderLog();
+}
+
+function logRoundHeader(n){
+  state.logs.push({ text: `RONDA ${n}`, round:n, color: roundColorFor(n), header:true });
+  if(state.logs.length > 300) state.logs.shift();
   renderLog();
 }
 
@@ -839,6 +904,20 @@ document.getElementById('restart-btn').addEventListener('click', ()=>{
   document.getElementById('setup-screen').classList.remove('hidden');
 });
 
+document.getElementById('rematch-btn').addEventListener('click', ()=>{
+  clearSavedGame();
+  document.getElementById('gameover-modal').classList.add('hidden');
+  if(lastGameMode && lastGameOpts){
+    // misma configuración y nombres, marcador reiniciado desde cero
+    document.getElementById('game-screen').classList.remove('hidden');
+    document.getElementById('setup-screen').classList.add('hidden');
+    initGame(lastGameMode, lastGameOpts);
+  } else {
+    document.getElementById('game-screen').classList.add('hidden');
+    document.getElementById('setup-screen').classList.remove('hidden');
+  }
+});
+
 /* ---- Reanudar partida guardada ---- */
 (function checkSavedGame(){
   const saved = loadGameFromStorage();
@@ -871,7 +950,12 @@ document.getElementById('discard-saved-btn').addEventListener('click', ()=>{
 });
 
 /* ======================= GAME INIT ======================= */
+let lastGameMode = null;
+let lastGameOpts = null;
+
 function initGame(mode, opts){
+  lastGameMode = mode;
+  lastGameOpts = opts;
   state = freshState(mode, opts);
   const desc = state.teamMode
     ? `Modo equipos: ${state.teams.length} equipos.`
@@ -885,6 +969,7 @@ function startRound(startingIdx){
   state.discard = [];
   state.roundOver = false;
   state.turnsCompletedThisRound = 0;
+  state.currentRoundNumber = (state.currentRoundNumber || 0) + 1;
   state.players.forEach(p => p.hand = []);
 
   for(let i=0;i<HAND_SIZE;i++){
@@ -893,7 +978,8 @@ function startRound(startingIdx){
   state.discard.push(state.deck.pop());
 
   state.startingPlayerIndex = startingIdx % state.numPlayers;
-  log(`--- Nueva ronda --- Empieza ${state.players[state.startingPlayerIndex].name}. No se puede cantar 9 durante la primera vuelta.`);
+  logRoundHeader(state.currentRoundNumber);
+  log(`Empieza ${state.players[state.startingPlayerIndex].name}. No se puede cantar 9 durante la primera vuelta.`);
   startTurn(state.startingPlayerIndex);
 }
 
@@ -901,6 +987,7 @@ function startTurn(idx){
   state.currentPlayerIndex = idx;
   state.turnPhase = 'select';
   state.lastDiscardValues = [];
+  state.lastDiscardType = null;
   state.lastDiscardedIds = [];
   state.drawnCard = null;
   state.selectedIds = [];
@@ -1016,6 +1103,8 @@ function commitDiscard(player, cards){
   player.hand = player.hand.filter(c=> !ids.includes(c.id));
   sorted.forEach(c=> state.discard.push(c));
 
+  const validation = validateSelection(cards);
+  state.lastDiscardType = validation.ok ? validation.type : 'single';
   state.lastDiscardValues = [...new Set(sorted.map(c=>c.value))];
   state.lastDiscardedIds = sorted.map(c=>c.id);
 
@@ -1025,6 +1114,13 @@ function commitDiscard(player, cards){
   state.selectedIds = [];
   state.turnPhase = 'draw';
   renderAll();
+}
+
+// El "derecho a descarte inmediato" solo aplica cuando lo que se tiró fue una
+// carta suelta o un grupo de mismo número — nunca una escalera (ahí cada
+// carta tiene un valor distinto, así que "mismo valor" no aplica).
+function isBonusEligible(value){
+  return state.lastDiscardType !== 'straight' && state.lastDiscardValues.includes(value);
 }
 
 // La(s) carta(s) que el jugador acaba de descartar quedan arriba de la pila,
@@ -1246,7 +1342,7 @@ function botDraw(player){
   let takeDiscard = false;
   if(discardTop){
     const matchesInHand = player.hand.filter(c=>c.value === discardTop.value).length;
-    if(matchesInHand >= 1 || state.lastDiscardValues.includes(discardTop.value)) takeDiscard = true;
+    if(matchesInHand >= 1 || isBonusEligible(discardTop.value)) takeDiscard = true;
     const values = new Set(player.hand.map(c=>c.value));
     if(discardTop.value > 0 && (values.has(discardTop.value-1) || values.has(discardTop.value+1))) takeDiscard = true;
     if(discardTop.value >= 11) takeDiscard = false;
@@ -1265,7 +1361,7 @@ function botDraw(player){
   state.turnPhase = 'resolve';
   renderAll();
 
-  const matches = state.lastDiscardValues.includes(drawnCard.value);
+  const matches = isBonusEligible(drawnCard.value);
   setTimeout(()=>{ finalizeDraw(player, matches); }, Math.round(BOT_DELAY/2));
 }
 
@@ -1371,7 +1467,7 @@ function renderOpponents(forceRevealAll){
     const showCards = forceRevealAll || (state.mode==='pvp' && idx===state.currentPlayerIndex && state.revealed);
     let cardsHtml;
     if(showCards){
-      cardsHtml = p.hand.map(c=> cardHTML(c,{extraClass:'card-mini'})).join('');
+      cardsHtml = p.hand.slice().sort((a,b)=>a.value-b.value).map(c=> cardHTML(c,{extraClass:'card-mini'})).join('');
     } else {
       cardsHtml = p.hand.map(()=> cardBackHTML('card-mini')).join('');
     }
@@ -1444,7 +1540,8 @@ function renderHand(forceRevealAll){
   if(canSeeAndInteract || forceRevealAll){
     sumEl.textContent = handSum(player.hand);
     const canSelect = state.turnPhase === 'select' && !state.roundOver && !forceRevealAll;
-    handEl.innerHTML = player.hand.map(c=>{
+    const orderedHand = player.hand.slice().sort((a,b)=> a.value - b.value);
+    handEl.innerHTML = orderedHand.map(c=>{
       const selected = state.selectedIds.includes(c.id);
       return cardHTML(c, { clickable: canSelect, selected });
     }).join('');
@@ -1453,7 +1550,7 @@ function renderHand(forceRevealAll){
       pendingRow.classList.remove('hidden');
       pendingRow.classList.add('flex');
       pendingSlot.innerHTML = cardHTML(state.drawnCard, { pending:true });
-      const matches = state.lastDiscardValues.includes(state.drawnCard.value);
+      const matches = isBonusEligible(state.drawnCard.value);
       const interactiveResolve = player.isHuman && (state.mode !== 'pvp' || state.revealed);
       if(matches){
         resultText.textContent = '¡Coincide con lo que descartaste! ¿También la descartas?';
@@ -1498,7 +1595,12 @@ function renderTurnBanner(){
 }
 
 function renderLog(){
-  const html = state.logs.slice().reverse().map(l=> `<div class="log-line">${l}</div>`).join('');
+  const html = state.logs.slice().reverse().map(entry=>{
+    if(entry.header){
+      return `<div class="log-round-header" style="color:${entry.color}; border-color:${entry.color};">◆ ${escapeHtml(entry.text)}</div>`;
+    }
+    return `<div class="log-line" style="border-left:2px solid ${entry.color};">${escapeHtml(entry.text)}</div>`;
+  }).join('');
   document.getElementById('log-list').innerHTML = html;
   const mobileList = document.getElementById('log-list-mobile');
   if(mobileList) mobileList.innerHTML = html;
